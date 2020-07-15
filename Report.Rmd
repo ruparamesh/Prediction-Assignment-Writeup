@@ -1,0 +1,240 @@
+---
+title: "Final Project Report"
+author: "Rupa"
+date: "15/07/2020"
+output: html_document
+---
+## Final Project Report - Practical Machine Learning Course
+
+# Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+## Projct Purpose
+
+The goal of your project is to predict the manner in which they did the exercise. This is the “classe” variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+## Preproccessing the training and testing dataset
+
+# Loading the library
+
+```{r setup, include=TRUE}
+library(plyr)
+library(dplyr)
+```
+
+```{r setup1, include=TRUE}
+library(lattice)
+library(ggplot2)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+```
+
+```{r setup2, include=TRUE}
+library(kernlab)
+```
+
+```{r setup3, include=TRUE}
+library(randomForest)
+```
+
+```{r setup4, include=TRUE}
+library(knitr)
+library(e1071)
+```
+
+## Loading the training data
+
+```{r setup5, include=TRUE}
+trainingdf <- read.csv("training.csv")
+testingdf <- read.csv("testing.csv")
+```
+
+# Let’s first analysis the rows and columns in training and testing set
+
+```{r setup6, include=TRUE}
+dim(trainingdf)
+```
+
+```{r setup7, include=TRUE}
+dim(testingdf)
+```
+
+## Check the records for each group
+
+```{r setup57, include=TRUE}
+groupByClasse <- trainingdf %>% group_by(classe) %>% summarise(counts = n())
+g <- ggplot(groupByClasse, aes(x = classe, y = counts)) + geom_bar(stat = "identity")
+g <- g + geom_bar(stat = "identity")
+g <- g + ggtitle("Total number of records for each groups")
+g <- g + xlab("Groups")
+g <- g + ylab("Counts")
+plot(g)
+
+```
+
+```{r setup8, include=TRUE}
+rm(groupByClasse)
+```
+
+Data set is skewed towards the group A, but it does not impact too much on the modeling
+After analysis the columns names we should Exclude the obvious columns i.e “X”, “user_name”, “raw_timestamp_part_1”, “raw_timestamp_part_2”, “cvtd_timestamp”
+
+```{r setup9, include=TRUE}
+excludecolumns <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", 
+                    "cvtd_timestamp", "new_window")
+
+# Method to exlude some columns
+getDataExcludingSomeColumns  <- function(tdata, excludecolumns) {
+  exdata <- tdata[, !(names(tdata) %in% excludecolumns)]
+  exdata
+}
+
+# Now remove the columns
+trainingdf <- getDataExcludingSomeColumns(trainingdf, excludecolumns)
+testingdf <- getDataExcludingSomeColumns(testingdf, c(excludecolumns, 'problem_id'))
+
+dim(trainingdf)
+```
+
+```{r setup10, include=TRUE}
+dim(testingdf)
+```
+
+Now after excluding after some obvious columns we have left with 154, one extra column because trainingdf contains classe and testingdf does not.
+
+## Important observations:
+
+* After deeply seeing the datasets we have found that it contains some measued statistics which will be same for all rows, e.g mean of a roll_belt will be same in all rows, so let’s exclude all the measured statics.
+
+```{r setup11, include=TRUE}
+# Removing the Measured statistic columns
+measuredStaticstucColPattern  <- "kurtosis_|skewness_|max_|min_|amplitude_|avg_|stddev_|var_"
+# Removed the measured Statics columns since they are same for one column for example max of yaw_belt will be same in all the rows
+getDataExceludedMatchingColumnPattern <- function (tdata, excludecolumnsPattern) {
+  exdata <- tdata[, -grep(excludecolumnsPattern, colnames(tdata))]
+  exdata
+}
+trainingdf <- getDataExceludedMatchingColumnPattern(trainingdf, measuredStaticstucColPattern)
+testingdf <- getDataExceludedMatchingColumnPattern(testingdf, measuredStaticstucColPattern)
+dim(trainingdf)
+```
+
+```{r setup12, include=TRUE}
+dim(testingdf)
+```
+
+## Removed the columns which has mostly NA values
+
+Now let’s make sure that any columns should not have NA more than 50% of total observaation
+
+```{r setup13, include=TRUE}
+# Now removing the columns which has more than 50% NA  values
+removedNAsColumns <- function(df) {
+  numRows <- nrow(df)
+  missingDf <- is.na(df)
+  removedColumns = which(colSums(missingDf) > numRows*50/100)
+  # might be possible that non of the columns have NA's more than 50%
+  if (length(removedColumns) > 0) {
+    colNames <- names(removedColumns)
+    df <- df[, -colNames]
+  }
+  df
+}
+
+trainingdf <- removedNAsColumns(trainingdf)
+testingdf <- removedNAsColumns(testingdf)
+
+dim(trainingdf)
+```
+
+```{r setup14, include=TRUE}
+dim(testingdf)
+```
+
+Also using the following code block, we can check that is there any row left with NA’s values or not
+
+```{r setup15, include=TRUE}
+completeCase <- complete.cases(trainingdf)
+nrows <- nrow(trainingdf)
+sum(completeCase) == nrows
+```
+
+From the above code block sum(completeCase) == nrows confirm that the number of complete case is equal to number of rows in trainingdf same for testingdf
+
+# Now we have only 54 columns(features) are left. we can preproccess the training and testing i.e converting into scales of 0 to 1 and replacing any NA values to average of that columns
+
+## PreProcess of data
+
+* First removed the near Zero Var columns
+
+* Normalize the data
+
+```{r setup16, include=TRUE}
+processedData <- function(rawdata) {
+  # for each columns NA should be replaced with average of that columns
+  for(column in names(rawdata)) {               
+    if(column == "classe") {
+      next;
+    }
+    columnValue <- as.numeric(rawdata[, column]);
+    avgColumnValue <- mean(columnValue, na.rm=TRUE)
+    minColumnValue <- min(columnValue, na.rm=TRUE)
+    maxColumnValue <- max(columnValue, na.rm=TRUE)
+    columnValue[is.na(columnValue)] <- avgColumnValue
+    
+    if (maxColumnValue == minColumnValue) {
+      next;
+    }
+    
+    for(i in 1:length(columnValue)) {
+      columnValue[i] <- round((columnValue[i] - minColumnValue) / (maxColumnValue - minColumnValue), 4);
+    }
+    
+    rawdata[, column] <- columnValue
+  }
+  rawdata
+}
+## Get the processed training data frame
+trainingdf <- processedData(trainingdf)
+testingdf <- processedData(testingdf)
+dim(trainingdf)
+```
+
+```{r setup18, include=TRUE}
+dim(testingdf)
+```
+
+## Partition the data set into training and testing data from trainingdf
+
+
+```{r setup19, include=TRUE}
+inTrain <- createDataPartition(y = trainingdf$classe, p=.95, list = FALSE)
+training <- trainingdf[inTrain, ]
+testing <- trainingdf[-inTrain, ]
+```
+
+## Training the model
+
+## Training the model with Decision Trees
+
+```{r setup21, include=TRUE}
+set.seed(33323)
+decisionTreeModel <- rpart(classe ~ ., data=training, method="class")
+library(rpart.plot)
+# Normal plot
+rpart.plot(decisionTreeModel)
+
+```
+
+```{r setup22, include=TRUE}
+
+fancyRpartPlot(decisionTreeModel)
+
+# predicitons
+predictionsDecisionTree <- predict(decisionTreeModel, testing, type = "class")
+
+```
